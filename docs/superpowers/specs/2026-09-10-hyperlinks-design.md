@@ -60,12 +60,22 @@ existing struct padding, so `sizeof(Glyph)` stays 16. `ATTRCMP` is unchanged
 
 - OSC 8 with an `id=` param: reuse an existing entry with equal `id` and `uri`.
 - Otherwise: allocate a free entry.
-- When no entry is free, run **GC**: mark every id referenced by `term.line`,
-  `term.alt`, `term.hist`, `term.c.attr` and the saved cursors, free every
-  unmarked entry, retry. The saved cursors (`static TCursor c[2]` inside
-  `tcursor`) move to file scope so GC can see them. If still full, the link is
-  dropped (`attr.link = 0`) — text still prints.
-- URIs longer than `LINKURIMAX = 8192` bytes are ignored (link not opened).
+- When no entry is free, run **GC** once: mark every id referenced by
+  `term.line`, `term.alt`, `term.hist`, `term.c.attr` and the saved cursors,
+  free every unmarked entry. The saved cursors (`static TCursor c[2]` inside
+  `tcursor`) move to file scope so GC can see them.
+- If GC leaves fewer than `LINKMAX/8` free entries, **evict**: zero the link
+  ids in the older half of the history, then GC again. New links on screen
+  matter more than links deep in scrollback.
+- If the table is still full (all live links are on screen), the link is
+  dropped (`attr.link = 0`) — text still prints — and the next 256 allocation
+  failures skip GC (back-off against adversarial output).
+- URIs longer than `LINKURIMAX = 8192` bytes, or containing bytes outside
+  `0x21–0x7e`, are ignored. `id=` values longer than `LINKIDMAX = 250` bytes
+  are ignored (the link is stored without an id).
+- Wide characters: the dummy cell carries the same link as its wide cell;
+  neighbour cells turned into blanks by overwriting half a wide char get
+  `link = 0`.
 
 **OSC 8 parsing** (`strhandle`, `case 8`). `strparse` splits in place by
 overwriting `;` with `\0` and stops after `STR_ARG_SIZ` (16) args, so the URI is
