@@ -195,6 +195,7 @@ static void mousesel(XEvent *, int);
 static void mousereport(XEvent *);
 static void openlink(const char *);
 static void xlinkcursor(void);
+static int xlinkheld(uint, int, int);
 static void xlinkhover(int, int, int);
 static void xlinkupdate(void);
 static void xupdatemotion(void);
@@ -528,19 +529,28 @@ xlinkhover(int on, int px, int py)
 	xlinkcursor();
 }
 
+/* link modifier held with the pointer inside the window */
+int
+xlinkheld(uint state, int x, int y)
+{
+	return (state & linkmod) == linkmod &&
+	       BETWEEN(x, 0, win.w - 1) && BETWEEN(y, 0, win.h - 1);
+}
+
 /* re-evaluate the link hover after a modifier key or focus changed */
 void
 xlinkupdate(void)
 {
 	Window root, child;
-	int rx, ry, x = 0, y = 0, on;
-	uint state = 0;
+	int rx, ry, x, y;
+	uint state;
 
-	on = XQueryPointer(xw.dpy, xw.win, &root, &child, &rx, &ry, &x, &y,
-	                   &state) &&
-	     (state & linkmod) == linkmod &&
-	     BETWEEN(x, 0, win.w - 1) && BETWEEN(y, 0, win.h - 1);
-	xlinkhover(on, x, y);
+	if (!XQueryPointer(xw.dpy, xw.win, &root, &child, &rx, &ry, &x, &y,
+	                   &state)) {
+		xlinkhover(0, 0, 0);
+		return;
+	}
+	xlinkhover(xlinkheld(state, x, y), x, y);
 }
 
 void
@@ -845,12 +855,10 @@ brelease(XEvent *e)
 void
 bmotion(XEvent *e)
 {
-	int x = e->xmotion.x, y = e->xmotion.y;
-	int linkheld = (e->xmotion.state & linkmod) == linkmod &&
-	               BETWEEN(x, 0, win.w - 1) && BETWEEN(y, 0, win.h - 1);
+	int linkheld = xlinkheld(e->xmotion.state, e->xmotion.x, e->xmotion.y);
 
 	if (linkmotion || linkheld)
-		xlinkhover(linkheld, x, y);
+		xlinkhover(linkheld, e->xmotion.x, e->xmotion.y);
 
 	if (linkclick) /* Button1 press opened a link, not a drag */
 		return;
@@ -860,8 +868,11 @@ bmotion(XEvent *e)
 		return;
 	}
 
-	if (e->xmotion.state & Button1Mask) /* not hover-only motion */
-		mousesel(e, 0);
+	/* hover-only motion (no button) must not move a selection */
+	if (!(e->xmotion.state & Button1Mask))
+		return;
+
+	mousesel(e, 0);
 }
 
 void
@@ -1679,9 +1690,9 @@ xdrawcursor(int cx, int cy, Glyph g, int ox, int oy, Glyph og)
 	/*
 	 * Select the right color for the right mode.
 	 */
-	g.mode &= ATTR_BOLD|ATTR_ITALIC|ATTR_UNDERLINE|ATTR_STRUCK|ATTR_WIDE;
 	if (tlinkhovered(cx, cy))
 		g.mode |= ATTR_UNDERLINE;
+	g.mode &= ATTR_BOLD|ATTR_ITALIC|ATTR_UNDERLINE|ATTR_STRUCK|ATTR_WIDE;
 
 	if (IS_SET(MODE_REVERSE)) {
 		g.mode |= ATTR_REVERSE;
@@ -1956,12 +1967,12 @@ focus(XEvent *ev)
 }
 
 void
-crossing(XEvent *e)
+crossing(XEvent *ev)
 {
-	XCrossingEvent *c = &e->xcrossing;
+	XCrossingEvent *e = &ev->xcrossing;
 
-	xlinkhover(e->type == EnterNotify && (c->state & linkmod) == linkmod,
-	           c->x, c->y);
+	xlinkhover(ev->type == EnterNotify &&
+	           xlinkheld(e->state, e->x, e->y), e->x, e->y);
 }
 
 int
