@@ -24,11 +24,15 @@ $(OBJ): config.h config.mk
 st: $(OBJ)
 	$(CC) -o $@ $(OBJ) $(STLDFLAGS)
 
-test: tests/test_url
+test: tests/test_url tests/test_st
 	./tests/test_url
+	./tests/test_st
 
 tests/test_url: tests/test_url.c tests/test.h url.c url.h
 	$(CC) $(STCFLAGS) -o $@ tests/test_url.c url.c
+
+tests/test_st: tests/test_st.c tests/test.h st.c st.h win.h url.c url.h
+	$(CC) $(STCFLAGS) -o $@ tests/test_st.c url.c $(STLDFLAGS)
 
 clean:
 	rm -f st $(OBJ) st-$(VERSION).tar.gz tests/test_url tests/test_st

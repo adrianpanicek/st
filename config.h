@@ -158,6 +158,12 @@ static unsigned int mousefg = 7;
 static unsigned int mousebg = 0;
 
 /*
+ * hyperlinks: only links starting with one of these prefixes are detected
+ * (plain text) or accepted (OSC 8)
+ */
+char *urlschemes[] = { "http://", "https://", "file://", "mailto:", NULL };
+
+/*
  * Color used to display font attributes when fontconfig selected a font which
  * doesn't match the ones requested.
  */

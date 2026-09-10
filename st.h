@@ -63,6 +63,7 @@ typedef uint_least32_t Rune;
 typedef struct {
 	Rune u;           /* character code */
 	ushort mode;      /* attribute flags */
+	ushort link;      /* hyperlink id, 0 if none */
 	uint32_t fg;      /* foreground  */
 	uint32_t bg;      /* background  */
 } Glyph;
@@ -108,6 +109,7 @@ void selstart(int, int, int);
 void selextend(int, int, int, int);
 int selected(int, int);
 char *getsel(void);
+char *tlinkat(int, int);
 
 size_t utf8encode(Rune, char *);
 
@@ -128,3 +130,4 @@ extern unsigned int tabspaces;
 extern unsigned int defaultfg;
 extern unsigned int defaultbg;
 extern unsigned int defaultcs;
+extern char *urlschemes[];

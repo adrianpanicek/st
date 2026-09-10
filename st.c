@@ -19,6 +19,7 @@
 
 #include "st.h"
 #include "win.h"
+#include "url.h"
 
 #if   defined(__linux)
  #include <pty.h>
@@ -36,6 +37,9 @@
 #define STR_BUF_SIZ   ESC_BUF_SIZ
 #define STR_ARG_SIZ   ESC_ARG_SIZ
 #define HISTSIZE      2000
+#define LINKMAX       4096 /* hyperlink table size, id 0 means no link */
+#define LINKURIMAX    8192 /* longest accepted OSC 8 URI */
+#define LINKIDMAX     250  /* longest accepted OSC 8 id= parameter */
 
 /* macros */
 #define IS_SET(flag)		((term.mode & (flag)) != 0)
@@ -113,6 +117,11 @@ typedef struct {
 	int alt;
 } Selection;
 
+typedef struct {
+	char *uri; /* NULL if the slot is free */
+	char *id;  /* OSC 8 id= parameter, NULL if none */
+} Link;
+
 /* Internal representation of the screen */
 typedef struct {
 	int row;      /* nb row */
@@ -176,6 +185,14 @@ static void strhandle(void);
 static void strparse(void);
 static void strreset(void);
 
+static char *linkfind(int, int, ushort *, int *, int *, int *, int *);
+static int linkallowed(const char *);
+static void linkevict(void);
+static int linkgc(void);
+static void linkmark(uchar *, Line);
+static ushort linknew(const char *, const char *);
+static void tsetlink(void);
+
 static void tprinter(char *, size_t);
 static void tdumpsel(void);
 static void tdumpline(int);
@@ -234,6 +251,8 @@ static STREscape strescseq;
 static int iofd = 1;
 static int cmdfd;
 static pid_t pid;
+static TCursor savedc[2]; /* DECSC cursors: normal and alt screen */
+static Link links[LINKMAX];
 
 static const uchar utfbyte[UTF_SIZ + 1] = {0x80,    0, 0xC0, 0xE0, 0xF0};
 static const uchar utfmask[UTF_SIZ + 1] = {0xC0, 0x80, 0xE0, 0xF0, 0xF8};
@@ -1010,14 +1029,13 @@ tfulldirt(void)
 void
 tcursor(int mode)
 {
-	static TCursor c[2];
 	int alt = IS_SET(MODE_ALTSCREEN);
 
 	if (mode == CURSOR_SAVE) {
-		c[alt] = term.c;
+		savedc[alt] = term.c;
 	} else if (mode == CURSOR_LOAD) {
-		term.c = c[alt];
-		tmoveto(c[alt].x, c[alt].y);
+		term.c = savedc[alt];
+		tmoveto(savedc[alt].x, savedc[alt].y);
 	}
 }
 
@@ -1300,10 +1318,12 @@ tsetchar(Rune u, const Glyph *attr, int x, int y)
 		if (x+1 < term.col) {
 			term.line[y][x+1].u = ' ';
 			term.line[y][x+1].mode &= ~ATTR_WDUMMY;
+			term.line[y][x+1].link = 0;
 		}
 	} else if (term.line[y][x].mode & ATTR_WDUMMY) {
 		term.line[y][x-1].u = ' ';
 		term.line[y][x-1].mode &= ~ATTR_WIDE;
+		term.line[y][x-1].link = 0;
 	}
 
 	term.dirty[y] = 1;
@@ -1336,6 +1356,7 @@ tclearregion(int x1, int y1, int x2, int y2)
 			gp->fg = term.c.attr.fg;
 			gp->bg = term.c.attr.bg;
 			gp->mode = 0;
+			gp->link = 0;
 			gp->u = ' ';
 		}
 	}
@@ -2004,6 +2025,9 @@ strhandle(void)
 			if (narg > 1)
 				xsettitle(strescseq.args[1]);
 			return;
+		case 8: /* hyperlink */
+			tsetlink();
+			return;
 		case 52: /* manipulate selection data */
 			if (narg > 2 && allowwindowops) {
 				dec = base64dec(strescseq.args[2]);
@@ -2084,6 +2108,186 @@ strhandle(void)
 
 	fprintf(stderr, "erresc: unknown str ");
 	strdump();
+}
+
+int
+linkallowed(const char *uri)
+{
+	char **sc;
+
+	for (sc = urlschemes; *sc; sc++) {
+		if (!strncmp(uri, *sc, strlen(*sc)))
+			return 1;
+	}
+	return 0;
+}
+
+void
+linkmark(uchar *used, Line line)
+{
+	int x;
+
+	if (!line)
+		return;
+	for (x = 0; x < term.col; x++)
+		used[line[x].link] = 1;
+}
+
+/* free every link no cell or cursor refers to, return free slots */
+int
+linkgc(void)
+{
+	static uchar used[LINKMAX];
+	int i, nfree = 0;
+
+	memset(used, 0, sizeof(used));
+	for (i = 0; i < term.row; i++) {
+		linkmark(used, term.line[i]);
+		linkmark(used, term.alt[i]);
+	}
+	for (i = 0; i < HISTSIZE; i++)
+		linkmark(used, term.hist[i]);
+	used[term.c.attr.link] = 1;
+	used[savedc[0].attr.link] = 1;
+	used[savedc[1].attr.link] = 1;
+
+	for (i = 1; i < LINKMAX; i++) {
+		if (!used[i] && links[i].uri) {
+			free(links[i].uri);
+			free(links[i].id);
+			links[i].uri = links[i].id = NULL;
+		}
+		if (!links[i].uri)
+			nfree++;
+	}
+	return nfree;
+}
+
+/* forget the links in the older half of the history */
+void
+linkevict(void)
+{
+	int i, x;
+	Line line;
+
+	for (i = 1; i <= HISTSIZE / 2; i++) {
+		line = term.hist[(term.histi + i) % HISTSIZE];
+		for (x = 0; x < term.col; x++)
+			line[x].link = 0;
+	}
+}
+
+/* id for uri, reusing an entry with the same OSC 8 id; 0 if table is full */
+ushort
+linknew(const char *uri, const char *id)
+{
+	static int next, backoff;
+	int i;
+
+	if (id) {
+		for (i = 1; i < LINKMAX; i++) {
+			if (links[i].id && !strcmp(links[i].id, id) &&
+			    !strcmp(links[i].uri, uri))
+				return i;
+		}
+	}
+	for (i = 1; i < LINKMAX; i++) {
+		next = next % (LINKMAX - 1) + 1;
+		if (!links[next].uri) {
+			links[next].uri = xstrdup(uri);
+			links[next].id = id ? xstrdup(id) : NULL;
+			return next;
+		}
+	}
+
+	/* table full: collect, sacrificing old history links if mostly live */
+	if (backoff > 0) {
+		backoff--;
+		return 0;
+	}
+	if (linkgc() < LINKMAX / 8) {
+		linkevict();
+		if (!linkgc()) {
+			backoff = 256; /* all live links are on screen */
+			return 0;
+		}
+	}
+	return linknew(uri, id);
+}
+
+/* OSC 8 ; params ; URI -- open a hyperlink, empty URI closes it */
+void
+tsetlink(void)
+{
+	char *params, *uri, *id = NULL, *p, *end;
+	int i;
+
+	term.c.attr.link = 0;
+	if (strescseq.narg < 3)
+		return;
+	params = strescseq.args[1];
+	uri = strescseq.args[2];
+	end = strescseq.buf + strescseq.len;
+
+	/*
+	 * strparse() cut the URI at every ';' and stops splitting after
+	 * STR_ARG_SIZ args, glue it back
+	 */
+	for (i = 3; i < strescseq.narg; i++)
+		strescseq.args[i][-1] = ';';
+	p = strescseq.args[strescseq.narg - 1];
+	p += strlen(p);
+	if (strescseq.narg == STR_ARG_SIZ && p < end)
+		*p = ';';
+
+	/* URIs are printable ASCII without spaces */
+	if (uri == end || end - uri > LINKURIMAX)
+		return;
+	for (p = uri; p < end; p++) {
+		if (*p <= ' ' || *p >= 0x7f)
+			return;
+	}
+	if (!linkallowed(uri))
+		return;
+
+	/* params are ':'-separated key=value pairs, only id is used */
+	for (p = strtok(params, ":"); p; p = strtok(NULL, ":")) {
+		if (!strncmp(p, "id=", 3) && p[3] && strlen(p + 3) <= LINKIDMAX)
+			id = p + 3;
+	}
+	term.c.attr.link = linknew(uri, id);
+}
+
+/*
+ * URI (malloc'd) of the link at screen cell col,row, or NULL. An OSC 8 link
+ * stores its id in *id; a plain-text URL stores its cells in *x0,*y0-*x1,*y1.
+ */
+char *
+linkfind(int col, int row, ushort *id, int *x0, int *y0, int *x1, int *y1)
+{
+	Glyph *gp;
+
+	*id = 0;
+	if (!BETWEEN(col, 0, term.col - 1) || !BETWEEN(row, 0, term.row - 1))
+		return NULL;
+
+	gp = &TLINE(row)[col];
+	if ((gp->mode & ATTR_WDUMMY) && col > 0)
+		gp--;
+	if (gp->link && links[gp->link].uri) {
+		*id = gp->link;
+		return xstrdup(links[gp->link].uri);
+	}
+	return NULL;
+}
+
+char *
+tlinkat(int col, int row)
+{
+	ushort id;
+	int x0, y0, x1, y1;
+
+	return linkfind(col, row, &id, &x0, &y0, &x1, &y1);
 }
 
 void
@@ -2613,9 +2817,11 @@ check_control_code:
 			if (gp[1].mode == ATTR_WIDE && term.c.x+2 < term.col) {
 				gp[2].u = ' ';
 				gp[2].mode &= ~ATTR_WDUMMY;
+				gp[2].link = 0;
 			}
 			gp[1].u = '\0';
 			gp[1].mode = ATTR_WDUMMY;
+			gp[1].link = gp->link;
 		}
 	}
 	if (term.c.x+width < term.col) {
@@ -2702,6 +2908,7 @@ tresize(int col, int row)
 		for (j = mincol; j < col; j++) {
 			term.hist[i][j] = term.c.attr;
 			term.hist[i][j].u = ' ';
+			term.hist[i][j].link = 0;
 		}
 	}
 
