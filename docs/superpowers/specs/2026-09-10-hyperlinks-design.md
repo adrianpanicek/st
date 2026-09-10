@@ -137,8 +137,13 @@ int   tlinkhovered(int col, int row);
   (or the application asked for mode 1003): `xsetpointermotion` records the
   application's wish, `xupdatemotion` ORs it with the link-hover state. This
   avoids a full-window redraw on every mouse move otherwise. In `bmotion`,
-  hover iff `(state & linkmod) == linkmod`; `mousereport`/`selextend` already
-  ignore button-less motion. On KeyPress/KeyRelease of a
+  hover iff `(state & linkmod) == linkmod` and the pointer is inside the
+  window; `mousereport` already ignores button-less motion, and `bmotion`
+  only calls `mousesel` while Button1 is held (a leftover selection must not
+  follow hover-only motion). Enter/Leave events hover/unhover, FocusIn
+  re-queries the pointer, and only modifier keys that are part of `linkmod`
+  trigger the `XQueryPointer` round-trip. Cursor cells drawn by
+  `xdrawcursor` keep the hover underline. On KeyPress/KeyRelease of a
   modifier key (`IsModifierKey`), `XQueryPointer` gives current mask and
   position; hover or unhover accordingly. A KeyRelease handler is added
   (`KeyReleaseMask` is already selected). `FocusOut` unhovers.
