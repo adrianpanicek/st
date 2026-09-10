@@ -1,0 +1,4 @@
+/st
+*.o
+/tests/test_url
+/tests/test_st

@@ -4,7 +4,7 @@
 
 include config.mk
 
-SRC = st.c x.c
+SRC = st.c x.c url.c
 OBJ = $(SRC:.c=.o)
 
 all: st
@@ -15,21 +15,28 @@ config.h:
 .c.o:
 	$(CC) $(STCFLAGS) -c $<
 
-st.o: config.h st.h win.h
+st.o: config.h st.h win.h url.h
 x.o: arg.h config.h st.h win.h
+url.o: url.h
 
 $(OBJ): config.h config.mk
 
 st: $(OBJ)
 	$(CC) -o $@ $(OBJ) $(STLDFLAGS)
 
+test: tests/test_url
+	./tests/test_url
+
+tests/test_url: tests/test_url.c tests/test.h url.c url.h
+	$(CC) $(STCFLAGS) -o $@ tests/test_url.c url.c
+
 clean:
-	rm -f st $(OBJ) st-$(VERSION).tar.gz
+	rm -f st $(OBJ) st-$(VERSION).tar.gz tests/test_url tests/test_st
 
 dist: clean
 	mkdir -p st-$(VERSION)
 	cp -R FAQ LEGACY TODO LICENSE Makefile README config.mk\
-		config.def.h st.info st.1 arg.h st.h win.h $(SRC)\
+		config.def.h st.info st.1 arg.h st.h win.h url.h $(SRC)\
 		st-$(VERSION)
 	tar -cf - st-$(VERSION) | gzip > st-$(VERSION).tar.gz
 	rm -rf st-$(VERSION)
@@ -48,4 +55,4 @@ uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/st
 	rm -f $(DESTDIR)$(MANPREFIX)/man1/st.1
 
-.PHONY: all clean dist install uninstall
+.PHONY: all clean dist install uninstall test
