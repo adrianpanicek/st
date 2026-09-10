@@ -180,6 +180,7 @@ static void krelease(XEvent *);
 static void cmessage(XEvent *);
 static void resize(XEvent *);
 static void focus(XEvent *);
+static void crossing(XEvent *);
 static uint buttonmask(uint);
 static int mouseaction(XEvent *, uint);
 static void brelease(XEvent *);
@@ -213,6 +214,8 @@ static void (*handler[LASTEvent])(XEvent *) = {
 	[Expose] = expose,
 	[FocusIn] = focus,
 	[FocusOut] = focus,
+	[EnterNotify] = crossing,
+	[LeaveNotify] = crossing,
 	[MotionNotify] = bmotion,
 	[ButtonPress] = bpress,
 	[ButtonRelease] = brelease,
@@ -525,19 +528,19 @@ xlinkhover(int on, int px, int py)
 	xlinkcursor();
 }
 
-/* re-evaluate the link hover after a modifier key changed */
+/* re-evaluate the link hover after a modifier key or focus changed */
 void
 xlinkupdate(void)
 {
 	Window root, child;
-	int rx, ry, x, y;
-	uint state;
+	int rx, ry, x = 0, y = 0, on;
+	uint state = 0;
 
-	if (!XQueryPointer(xw.dpy, xw.win, &root, &child, &rx, &ry, &x, &y,
-	                   &state))
-		return;
-	xlinkhover((state & linkmod) == linkmod &&
-	           BETWEEN(x, 0, win.w - 1) && BETWEEN(y, 0, win.h - 1), x, y);
+	on = XQueryPointer(xw.dpy, xw.win, &root, &child, &rx, &ry, &x, &y,
+	                   &state) &&
+	     (state & linkmod) == linkmod &&
+	     BETWEEN(x, 0, win.w - 1) && BETWEEN(y, 0, win.h - 1);
+	xlinkhover(on, x, y);
 }
 
 void
@@ -842,10 +845,12 @@ brelease(XEvent *e)
 void
 bmotion(XEvent *e)
 {
-	int linkheld = (e->xmotion.state & linkmod) == linkmod;
+	int x = e->xmotion.x, y = e->xmotion.y;
+	int linkheld = (e->xmotion.state & linkmod) == linkmod &&
+	               BETWEEN(x, 0, win.w - 1) && BETWEEN(y, 0, win.h - 1);
 
 	if (linkmotion || linkheld)
-		xlinkhover(linkheld, e->xmotion.x, e->xmotion.y);
+		xlinkhover(linkheld, x, y);
 
 	if (linkclick) /* Button1 press opened a link, not a drag */
 		return;
@@ -855,7 +860,8 @@ bmotion(XEvent *e)
 		return;
 	}
 
-	mousesel(e, 0);
+	if (e->xmotion.state & Button1Mask) /* not hover-only motion */
+		mousesel(e, 0);
 }
 
 void
@@ -1298,7 +1304,8 @@ xinit(int cols, int rows)
 	xw.attrs.bit_gravity = NorthWestGravity;
 	xw.attrs.event_mask = FocusChangeMask | KeyPressMask | KeyReleaseMask
 		| ExposureMask | VisibilityChangeMask | StructureNotifyMask
-		| ButtonMotionMask | ButtonPressMask | ButtonReleaseMask;
+		| ButtonMotionMask | ButtonPressMask | ButtonReleaseMask
+		| EnterWindowMask | LeaveWindowMask;
 	xw.attrs.colormap = xw.cmap;
 
 	root = XRootWindow(xw.dpy, xw.scr);
@@ -1662,6 +1669,8 @@ xdrawcursor(int cx, int cy, Glyph g, int ox, int oy, Glyph og)
 	/* remove the old cursor */
 	if (selected(ox, oy))
 		og.mode ^= ATTR_REVERSE;
+	if (tlinkhovered(ox, oy))
+		og.mode |= ATTR_UNDERLINE;
 	xdrawglyph(og, ox, oy);
 
 	if (IS_SET(MODE_HIDE))
@@ -1671,6 +1680,8 @@ xdrawcursor(int cx, int cy, Glyph g, int ox, int oy, Glyph og)
 	 * Select the right color for the right mode.
 	 */
 	g.mode &= ATTR_BOLD|ATTR_ITALIC|ATTR_UNDERLINE|ATTR_STRUCK|ATTR_WIDE;
+	if (tlinkhovered(cx, cy))
+		g.mode |= ATTR_UNDERLINE;
 
 	if (IS_SET(MODE_REVERSE)) {
 		g.mode |= ATTR_REVERSE;
@@ -1933,6 +1944,7 @@ focus(XEvent *ev)
 		xseturgency(0);
 		if (IS_SET(MODE_FOCUS))
 			ttywrite("\033[I", 3, 0);
+		xlinkupdate(); /* ctrl may already be held on focus-in */
 	} else {
 		if (xw.ime.xic)
 			XUnsetICFocus(xw.ime.xic);
@@ -1941,6 +1953,15 @@ focus(XEvent *ev)
 			ttywrite("\033[O", 3, 0);
 		xlinkhover(0, 0, 0);
 	}
+}
+
+void
+crossing(XEvent *e)
+{
+	XCrossingEvent *c = &e->xcrossing;
+
+	xlinkhover(e->type == EnterNotify && (c->state & linkmod) == linkmod,
+	           c->x, c->y);
 }
 
 int
@@ -2007,7 +2028,8 @@ kpress(XEvent *ev)
 	} else {
 		len = XLookupString(e, buf, sizeof buf, &ksym, NULL);
 	}
-	if (IsModifierKey(ksym))
+	if (IsModifierKey(ksym) &&
+	    (XkbKeysymToModifiers(xw.dpy, ksym) & linkmod))
 		xlinkupdate();
 	/* 1. shortcuts */
 	for (bp = shortcuts; bp < shortcuts + LEN(shortcuts); bp++) {
@@ -2044,7 +2066,10 @@ kpress(XEvent *ev)
 void
 krelease(XEvent *ev)
 {
-	if (IsModifierKey(XLookupKeysym(&ev->xkey, 0)))
+	KeySym ksym = XLookupKeysym(&ev->xkey, 0);
+
+	if (IsModifierKey(ksym) &&
+	    (XkbKeysymToModifiers(xw.dpy, ksym) & linkmod))
 		xlinkupdate();
 }
 
