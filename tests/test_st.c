@@ -37,7 +37,8 @@ int xsetcursor(int c) { return 0; }
 void xsetmode(int s, unsigned int f) {}
 void xsetpointermotion(int s) {}
 void xsetsel(char *s) {}
-int xstartdraw(void) { return 0; }
+static int drawing; /* let draw() run past xstartdraw() */
+int xstartdraw(void) { return drawing; }
 void xximspot(int x, int y) {}
 
 static void
@@ -217,6 +218,99 @@ test_table_full_evicts_history(void)
 	CHECK(TLINE(0)[0].link == 0);
 }
 
+static void
+test_osc8_hover(void)
+{
+	tnew(80, 24);
+	put("\033]8;id=a;https://a.org\033\\ab\033]8;;\033\\ ");
+	put("\033]8;id=a;https://a.org\033\\cd\033]8;;\033\\ ");
+	put("\033]8;id=b;https://a.org\033\\ef\033]8;;\033\\");
+	CHECK(tlinkhover(0, 0));
+	CHECK(tlinkhovered(1, 0));
+	CHECK(!tlinkhovered(2, 0));
+	CHECK(tlinkhovered(4, 0));
+	CHECK(!tlinkhovered(6, 0));
+	tlinkunhover();
+	CHECK(!tlinkhovered(0, 0));
+}
+
+static void
+test_osc8_wins_over_plain(void)
+{
+	tnew(80, 24);
+	put("\033]8;;https://a.org\033\\https://b.org\033]8;;\033\\");
+	CHECKURI(tlinkat(3, 0), "https://a.org");
+}
+
+static void
+test_plain(void)
+{
+	tnew(80, 24);
+	put("see https://example.com/a now");
+	CHECKURI(tlinkat(10, 0), "https://example.com/a");
+	CHECKURI(tlinkat(1, 0), NULL);
+	CHECK(!tlinkhover(1, 0));
+	CHECK(tlinkhover(10, 0));
+	CHECK(tlinkhovered(4, 0));
+	CHECK(tlinkhovered(24, 0));
+	CHECK(!tlinkhovered(3, 0));
+	CHECK(!tlinkhovered(25, 0));
+	tlinkunhover();
+}
+
+static void
+test_plain_wrapped(void)
+{
+	tnew(20, 5);
+	/* row 0: "xx https://example.c", row 1: "om/very/long/path" */
+	put("xx https://example.com/very/long/path");
+	CHECKURI(tlinkat(5, 0), "https://example.com/very/long/path");
+	CHECKURI(tlinkat(3, 1), "https://example.com/very/long/path");
+	CHECK(tlinkhover(3, 1));
+	CHECK(!tlinkhovered(2, 0));
+	CHECK(tlinkhovered(3, 0));
+	CHECK(tlinkhovered(19, 0));
+	CHECK(tlinkhovered(16, 1));
+	CHECK(!tlinkhovered(17, 1));
+	tlinkunhover();
+}
+
+static void
+test_plain_wrapped_scrolled(void)
+{
+	tnew(20, 5);
+	put("xx https://example.com/very/long/path\r\n1\r\n2\r\n3\r\n4\r\n5");
+	term.scr = 6;	/* first URL row at the bottom of the view */
+	CHECKURI(tlinkat(5, 4), "https://example.com/very/long/path");
+	term.scr = 1;	/* second URL row at the top of the view */
+	CHECKURI(tlinkat(3, 0), "https://example.com/very/long/path");
+	term.scr = 0;
+}
+
+static void
+test_hover_draw(void)
+{
+	tnew(80, 5);
+	drawing = 1;
+	put("see https://example.com/a now");
+	CHECK(tlinkhover(10, 0));
+	/* the link scrolls away under a still pointer */
+	put("\r\n\r\n\r\n\r\n\r\n");
+	draw();
+	CHECK(!tlinkhovering());
+	CHECK(!tlinkhovered(10, 0));
+	/* a link appears under the still pointer */
+	put("\033[H\033]8;;https://b.org\033\\0123456789ABC\033]8;;\033\\");
+	draw();
+	CHECK(tlinkhovering());
+	CHECK(tlinkhovered(10, 0));
+	/* once unhovered, drawing does not bring it back */
+	tlinkunhover();
+	draw();
+	CHECK(!tlinkhovering());
+	drawing = 0;
+}
+
 int
 main(void)
 {
@@ -229,5 +323,11 @@ main(void)
 	test_history_and_gc();
 	test_wide_chars();
 	test_table_full_evicts_history();
+	test_osc8_hover();
+	test_osc8_wins_over_plain();
+	test_plain();
+	test_plain_wrapped();
+	test_plain_wrapped_scrolled();
+	test_hover_draw();
 	return report();
 }

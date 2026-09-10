@@ -110,6 +110,10 @@ void selextend(int, int, int, int);
 int selected(int, int);
 char *getsel(void);
 char *tlinkat(int, int);
+int tlinkhover(int, int);
+int tlinkhovered(int, int);
+void tlinkunhover(void);
+int tlinkhovering(void);
 
 size_t utf8encode(Rune, char *);
 

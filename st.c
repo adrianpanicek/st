@@ -122,6 +122,14 @@ typedef struct {
 	char *id;  /* OSC 8 id= parameter, NULL if none */
 } Link;
 
+typedef struct {
+	int armed;          /* pointer cell known, re-evaluate on draw */
+	int active;
+	int col, row;       /* pointer cell the hover was computed for */
+	ushort link;        /* OSC 8 link id, 0 for a plain-text URL */
+	int x0, y0, x1, y1; /* plain-text URL cells, inclusive */
+} LinkHover;
+
 /* Internal representation of the screen */
 typedef struct {
 	int row;      /* nb row */
@@ -253,6 +261,7 @@ static int cmdfd;
 static pid_t pid;
 static TCursor savedc[2]; /* DECSC cursors: normal and alt screen */
 static Link links[LINKMAX];
+static LinkHover hover;
 
 static const uchar utfbyte[UTF_SIZ + 1] = {0x80,    0, 0xC0, 0xE0, 0xF0};
 static const uchar utfmask[UTF_SIZ + 1] = {0xC0, 0x80, 0xE0, 0xF0, 0xF8};
@@ -2150,6 +2159,7 @@ linkgc(void)
 	used[term.c.attr.link] = 1;
 	used[savedc[0].attr.link] = 1;
 	used[savedc[1].attr.link] = 1;
+	used[hover.link] = 1;
 
 	for (i = 1; i < LINKMAX; i++) {
 		if (!used[i] && links[i].uri) {
@@ -2266,6 +2276,8 @@ char *
 linkfind(int col, int row, ushort *id, int *x0, int *y0, int *x1, int *y1)
 {
 	Glyph *gp;
+	char *buf, *uri = NULL;
+	int *cell, x, y, ys, ye, maxrows, len = 0, pos = -1, b, e;
 
 	*id = 0;
 	if (!BETWEEN(col, 0, term.col - 1) || !BETWEEN(row, 0, term.row - 1))
@@ -2278,7 +2290,43 @@ linkfind(int col, int row, ushort *id, int *x0, int *y0, int *x1, int *y1)
 		*id = gp->link;
 		return xstrdup(links[gp->link].uri);
 	}
-	return NULL;
+
+	/*
+	 * plain text: scan the logical line of rows joined by ATTR_WRAP, it
+	 * may continue into history or below a scrolled view
+	 */
+	maxrows = LINKURIMAX / term.col + 1;
+	for (ys = row; ys > row - maxrows && ys - 1 > term.scr - HISTSIZE &&
+	     (TLINE(ys - 1)[term.col - 1].mode & ATTR_WRAP); ys--)
+		;
+	for (ye = row; ye < row + maxrows && ye < term.row - 1 + term.scr &&
+	     (TLINE(ye)[term.col - 1].mode & ATTR_WRAP); ye++)
+		;
+	buf = xmalloc((ye - ys + 1) * term.col);
+	cell = xmalloc((ye - ys + 1) * term.col * sizeof(*cell));
+	for (y = ys; y <= ye; y++) {
+		for (x = 0; x < term.col; x++) {
+			gp = &TLINE(y)[x];
+			if (gp->mode & ATTR_WDUMMY)
+				continue;
+			if (y == row && x == col)
+				pos = len;
+			cell[len] = (y - ys) * term.col + x;
+			buf[len++] = (gp->u > ' ' && gp->u < 0x7f) ? gp->u : ' ';
+		}
+	}
+	if (pos >= 0 && urlfind(buf, len, pos, urlschemes, &b, &e)) {
+		uri = xmalloc(e - b + 1);
+		memcpy(uri, buf + b, e - b);
+		uri[e - b] = '\0';
+		*x0 = cell[b] % term.col;
+		*y0 = ys + cell[b] / term.col;
+		*x1 = cell[e - 1] % term.col;
+		*y1 = ys + cell[e - 1] / term.col;
+	}
+	free(buf);
+	free(cell);
+	return uri;
 }
 
 char *
@@ -2288,6 +2336,56 @@ tlinkat(int col, int row)
 	int x0, y0, x1, y1;
 
 	return linkfind(col, row, &id, &x0, &y0, &x1, &y1);
+}
+
+/* hover the link under col,row; 1 if there is one */
+int
+tlinkhover(int col, int row)
+{
+	LinkHover old = hover;
+	char *uri;
+
+	uri = linkfind(col, row, &hover.link, &hover.x0, &hover.y0,
+	               &hover.x1, &hover.y1);
+	hover.active = uri != NULL;
+	hover.col = col;
+	hover.row = row;
+	hover.armed = 1;
+	free(uri);
+
+	if (hover.active != old.active || hover.link != old.link ||
+	    (hover.active && !hover.link &&
+	     (hover.x0 != old.x0 || hover.y0 != old.y0 ||
+	      hover.x1 != old.x1 || hover.y1 != old.y1)))
+		tfulldirt();
+	return hover.active;
+}
+
+int
+tlinkhovered(int x, int y)
+{
+	if (!hover.active)
+		return 0;
+	if (hover.link)
+		return TLINE(y)[x].link == hover.link;
+	return (y > hover.y0 || (y == hover.y0 && x >= hover.x0)) &&
+	       (y < hover.y1 || (y == hover.y1 && x <= hover.x1));
+}
+
+void
+tlinkunhover(void)
+{
+	if (hover.active)
+		tfulldirt();
+	hover.active = 0;
+	hover.armed = 0;
+	hover.link = 0;
+}
+
+int
+tlinkhovering(void)
+{
+	return hover.active;
 }
 
 void
@@ -2981,6 +3079,10 @@ draw(void)
 
 	if (!xstartdraw())
 		return;
+
+	/* re-evaluate the hover under a still pointer, output may move links */
+	if (hover.armed)
+		tlinkhover(hover.col, hover.row);
 
 	/* adjust cursor position */
 	LIMIT(term.ocx, 0, term.col-1);
