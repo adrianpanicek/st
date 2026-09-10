@@ -1202,6 +1202,9 @@ bmotion(XEvent *e)
 	if (linkmotion || linkheld)
 		xlinkhover(linkheld, e->xmotion.x, e->xmotion.y);
 
+	if (linkclick) /* Button1 press opened a link, not a drag */
+		return;
+
 	if (IS_SET(MODE_MOUSE) && !(e->xbutton.state & forcemousemod)) {
 		mousereport(e);
 		return;

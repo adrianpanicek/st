@@ -147,11 +147,16 @@ int   tlinkhovered(int col, int row);
   `xfinishdraw` — calls `XDefineCursor` when `tlinkhovering()` changed.
 - **Underline.** `xdrawline`: `if (tlinkhovered(x, y1)) new.mode |= ATTR_UNDERLINE;`
 - **Opening.** `openlink(const char *uri)`: double `fork` (grandchild is
-  reparented to init, so st's shell-only `sigchld` never sees it), `setsid`,
-  `execvp(urlopener[0], urlopener + uri)`; no shell, so no injection. The
-  scheme allowlist also blocks URIs beginning with `-`.
+  reparented to init, so st's shell-only `sigchld` never sees it; the
+  intermediate child resets SIGCHLD to default first), `setsid`, stdin
+  replaced by `/dev/null`, `execvp(urlopener[0], urlopener + uri)`; no
+  shell, so no injection. The scheme allowlist also blocks URIs beginning
+  with `-`. While a link click's button is held, motion is neither reported
+  to mouse-mode apps nor used for selection; a new Button1 press clears a
+  lost release.
 - **fd hygiene.** `ttynew` sets `FD_CLOEXEC` on `cmdfd` (both the `openpty`
-  and the `-l line` paths) so the browser does not hold the pty.
+  and the `-l line` paths) and on the `-o` file, so the browser does not
+  hold the pty, the line or the dump file.
 
 ## Error handling
 
@@ -166,6 +171,9 @@ int   tlinkhovered(int col, int row);
   URL preview.
 - Scheme allowlist prevents `javascript:`, custom protocol handlers, and
   option injection into the opener.
+- `file://` is accepted only with an empty, `localhost` or own-hostname
+  authority (OSC 8 and plain text alike): xdg-open would turn
+  `file://otherhost/x` into a path relative to st's cwd.
 
 ## Testing
 
