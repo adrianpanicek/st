@@ -112,6 +112,7 @@ typedef struct {
 	int isfixed; /* is fixed geometry? */
 	int l, t; /* left and top offset */
 	int gm; /* geometry mask */
+	Cursor cursor, linkcursor; /* normal and link-hover pointer */
 } XWindow;
 
 typedef struct {
@@ -168,11 +169,14 @@ static void xsetenv(void);
 static void xseturgency(int);
 static int evcol(XEvent *);
 static int evrow(XEvent *);
+static int pxcol(int);
+static int pxrow(int);
 
 static void expose(XEvent *);
 static void visibility(XEvent *);
 static void unmap(XEvent *);
 static void kpress(XEvent *);
+static void krelease(XEvent *);
 static void cmessage(XEvent *);
 static void resize(XEvent *);
 static void focus(XEvent *);
@@ -189,6 +193,10 @@ static void setsel(char *, Time);
 static void mousesel(XEvent *, int);
 static void mousereport(XEvent *);
 static void openlink(const char *);
+static void xlinkcursor(void);
+static void xlinkhover(int, int, int);
+static void xlinkupdate(void);
+static void xupdatemotion(void);
 static char *kmap(KeySym, uint);
 static int match(uint, uint);
 
@@ -197,6 +205,7 @@ static void usage(void);
 
 static void (*handler[LASTEvent])(XEvent *) = {
 	[KeyPress] = kpress,
+	[KeyRelease] = krelease,
 	[ClientMessage] = cmessage,
 	[ConfigureNotify] = resize,
 	[VisibilityNotify] = visibility,
@@ -260,6 +269,9 @@ static char *opt_title = NULL;
 
 static uint buttons; /* bit field of pressed buttons */
 static int linkclick; /* Button1 press was used to open a link */
+static int linkmotion;   /* motion events selected for link hover */
+static int appmotion;    /* application asked for all motion events */
+static int linkhovering; /* link pointer shape is shown */
 
 void
 clipcopy(const Arg *dummy)
@@ -336,19 +348,31 @@ ttysend(const Arg *arg)
 }
 
 int
-evcol(XEvent *e)
+pxcol(int x)
 {
-	int x = e->xbutton.x - borderpx;
+	x -= borderpx;
 	LIMIT(x, 0, win.tw - 1);
 	return x / win.cw;
 }
 
 int
-evrow(XEvent *e)
+pxrow(int y)
 {
-	int y = e->xbutton.y - borderpx;
+	y -= borderpx;
 	LIMIT(y, 0, win.th - 1);
 	return y / win.ch;
+}
+
+int
+evcol(XEvent *e)
+{
+	return pxcol(e->xbutton.x);
+}
+
+int
+evrow(XEvent *e)
+{
+	return pxrow(e->xbutton.y);
 }
 
 void
@@ -471,6 +495,49 @@ mouseaction(XEvent *e, uint release)
 	}
 
 	return 0;
+}
+
+/* show the hand pointer while a link is hovered */
+void
+xlinkcursor(void)
+{
+	int hovering = tlinkhovering();
+
+	if (hovering != linkhovering) {
+		linkhovering = hovering;
+		XDefineCursor(xw.dpy, xw.win,
+		              hovering ? xw.linkcursor : xw.cursor);
+	}
+}
+
+/* show (on) or hide the link hover for pointer position px,py */
+void
+xlinkhover(int on, int px, int py)
+{
+	if (on != linkmotion) {
+		linkmotion = on;
+		xupdatemotion();
+	}
+	if (on)
+		tlinkhover(pxcol(px), pxrow(py));
+	else
+		tlinkunhover();
+	xlinkcursor();
+}
+
+/* re-evaluate the link hover after a modifier key changed */
+void
+xlinkupdate(void)
+{
+	Window root, child;
+	int rx, ry, x, y;
+	uint state;
+
+	if (!XQueryPointer(xw.dpy, xw.win, &root, &child, &rx, &ry, &x, &y,
+	                   &state))
+		return;
+	xlinkhover((state & linkmod) == linkmod &&
+	           BETWEEN(x, 0, win.w - 1) && BETWEEN(y, 0, win.h - 1), x, y);
 }
 
 void
@@ -775,6 +842,11 @@ brelease(XEvent *e)
 void
 bmotion(XEvent *e)
 {
+	int linkheld = (e->xmotion.state & linkmod) == linkmod;
+
+	if (linkmotion || linkheld)
+		xlinkhover(linkheld, e->xmotion.x, e->xmotion.y);
+
 	if (linkclick) /* Button1 press opened a link, not a drag */
 		return;
 
@@ -1192,7 +1264,6 @@ void
 xinit(int cols, int rows)
 {
 	XGCValues gcvalues;
-	Cursor cursor;
 	Window parent, root;
 	pid_t thispid = getpid();
 	XColor xmousefg, xmousebg;
@@ -1262,8 +1333,9 @@ xinit(int cols, int rows)
 	}
 
 	/* white cursor, black outline */
-	cursor = XCreateFontCursor(xw.dpy, mouseshape);
-	XDefineCursor(xw.dpy, xw.win, cursor);
+	xw.cursor = XCreateFontCursor(xw.dpy, mouseshape);
+	xw.linkcursor = XCreateFontCursor(xw.dpy, linkmouseshape);
+	XDefineCursor(xw.dpy, xw.win, xw.cursor);
 
 	if (XParseColor(xw.dpy, xw.cmap, colorname[mousefg], &xmousefg) == 0) {
 		xmousefg.red   = 0xffff;
@@ -1277,7 +1349,8 @@ xinit(int cols, int rows)
 		xmousebg.blue  = 0x0000;
 	}
 
-	XRecolorCursor(xw.dpy, cursor, &xmousefg, &xmousebg);
+	XRecolorCursor(xw.dpy, xw.cursor, &xmousefg, &xmousebg);
+	XRecolorCursor(xw.dpy, xw.linkcursor, &xmousefg, &xmousebg);
 
 	xw.xembed = XInternAtom(xw.dpy, "_XEMBED", False);
 	xw.wmdeletewin = XInternAtom(xw.dpy, "WM_DELETE_WINDOW", False);
@@ -1731,6 +1804,8 @@ xdrawline(Line line, int x1, int y1, int x2)
 			continue;
 		if (selected(x, y1))
 			new.mode ^= ATTR_REVERSE;
+		if (tlinkhovered(x, y1))
+			new.mode |= ATTR_UNDERLINE;
 		if (i > 0 && ATTRCMP(base, new)) {
 			xdrawglyphfontspecs(specs, base, i, ox, y1);
 			specs += i;
@@ -1755,6 +1830,9 @@ xfinishdraw(void)
 	XSetForeground(xw.dpy, dc.gc,
 			dc.col[IS_SET(MODE_REVERSE)?
 				defaultfg : defaultbg].pixel);
+
+	/* draw() may have dropped or found a link under a still pointer */
+	xlinkcursor();
 }
 
 void
@@ -1792,7 +1870,14 @@ unmap(XEvent *ev)
 void
 xsetpointermotion(int set)
 {
-	MODBIT(xw.attrs.event_mask, set, PointerMotionMask);
+	appmotion = set;
+	xupdatemotion();
+}
+
+void
+xupdatemotion(void)
+{
+	MODBIT(xw.attrs.event_mask, appmotion || linkmotion, PointerMotionMask);
 	XChangeWindowAttributes(xw.dpy, xw.win, CWEventMask, &xw.attrs);
 }
 
@@ -1854,6 +1939,7 @@ focus(XEvent *ev)
 		win.mode &= ~MODE_FOCUSED;
 		if (IS_SET(MODE_FOCUS))
 			ttywrite("\033[O", 3, 0);
+		xlinkhover(0, 0, 0);
 	}
 }
 
@@ -1921,6 +2007,8 @@ kpress(XEvent *ev)
 	} else {
 		len = XLookupString(e, buf, sizeof buf, &ksym, NULL);
 	}
+	if (IsModifierKey(ksym))
+		xlinkupdate();
 	/* 1. shortcuts */
 	for (bp = shortcuts; bp < shortcuts + LEN(shortcuts); bp++) {
 		if (ksym == bp->keysym && match(bp->mod, e->state)) {
@@ -1951,6 +2039,13 @@ kpress(XEvent *ev)
 		}
 	}
 	ttywrite(buf, len, 1);
+}
+
+void
+krelease(XEvent *ev)
+{
+	if (IsModifierKey(XLookupKeysym(&ev->xkey, 0)))
+		xlinkupdate();
 }
 
 void
