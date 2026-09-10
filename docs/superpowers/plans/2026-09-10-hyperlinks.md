@@ -1096,6 +1096,7 @@ static int pxrow(int);
 After `static void kpress(XEvent *);` add `static void krelease(XEvent *);`.
 After `static void openlink(const char *);` add:
 ```c
+static void xlinkcursor(void);
 static void xlinkhover(int, int, int);
 static void xlinkupdate(void);
 static void xupdatemotion(void);
@@ -1145,25 +1146,32 @@ evrow(XEvent *e)
 
 Directly before `void\nbpress(XEvent *e)` add:
 ```c
-/* show (on) or hide the link hover for pointer position px,py */
+/* show the hand pointer while a link is hovered */
 void
-xlinkhover(int on, int px, int py)
+xlinkcursor(void)
 {
-	int hovering = 0;
+	int hovering = tlinkhovering();
 
-	if (on != linkmotion) {
-		linkmotion = on;
-		xupdatemotion();
-	}
-	if (on)
-		hovering = tlinkhover(pxcol(px), pxrow(py));
-	else
-		tlinkunhover();
 	if (hovering != linkhovering) {
 		linkhovering = hovering;
 		XDefineCursor(xw.dpy, xw.win,
 		              hovering ? xw.linkcursor : xw.cursor);
 	}
+}
+
+/* show (on) or hide the link hover for pointer position px,py */
+void
+xlinkhover(int on, int px, int py)
+{
+	if (on != linkmotion) {
+		linkmotion = on;
+		xupdatemotion();
+	}
+	if (on)
+		tlinkhover(pxcol(px), pxrow(py));
+	else
+		tlinkunhover();
+	xlinkcursor();
 }
 
 /* re-evaluate the link hover after a modifier key changed */
@@ -1251,6 +1259,12 @@ add
 ```c
 		if (tlinkhovered(x, y1))
 			new.mode |= ATTR_UNDERLINE;
+```
+At the end of `xfinishdraw` add:
+```c
+
+	/* draw() may have dropped or found a link under a still pointer */
+	xlinkcursor();
 ```
 
 - [ ] **Step 7: `x.c` — modifier keys and focus**

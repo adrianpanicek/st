@@ -90,7 +90,9 @@ unit-tested without a terminal.
 
 1. Build the *logical line* around screen row `y`: walk up while the previous
    row's last cell has `ATTR_WRAP`, walk down while the current row does.
-   Only on-screen rows (`TLINE(0..term.row-1)`) are considered.
+   The walk follows `TLINE` into history above the view and into
+   `term.line` below a scrolled view, capped at `LINKURIMAX / term.col + 1`
+   rows each way, so a wrapped URL is never cut at the view edge.
 2. Map each non-`ATTR_WDUMMY` cell to one byte; non-ASCII cells become a
    terminator byte.
 3. From the clicked cell, expand left and right over URL-legal ASCII
@@ -107,6 +109,7 @@ unit-tested without a terminal.
 char *tlinkat(int col, int row);  /* malloc'd URI under cell or NULL */
 int   tlinkhover(int col, int row); /* set hover to link under cell */
 void  tlinkunhover(void);
+int   tlinkhovering(void);          /* a link is currently hovered */
 int   tlinkhovered(int col, int row);
 ```
 
@@ -116,11 +119,13 @@ int   tlinkhovered(int col, int row);
 - `tlinkhover` returns 1 when a link is under the cell (x.c uses it for the
   pointer shape).
 - Hover state is either an OSC 8 id (hovered = every visible cell with that
-  id) or a plain-URL range `(x0,y0)-(x1,y1)` in screen coordinates. Changing
-  hover marks the old and new rows dirty.
-- `draw()` re-evaluates an active hover at its stored pointer cell before
-  drawing, so the underline follows content that scrolls under a still
-  pointer.
+  id) or a plain-URL range `(x0,y0)-(x1,y1)` in view coordinates (may lie
+  partly outside the view). Changing hover marks the screen dirty.
+- While the pointer cell is known (*armed*: from `tlinkhover` until
+  `tlinkunhover`), `draw()` re-evaluates the hover at that cell before
+  drawing, so the underline follows content that moves under a still pointer
+  and a link appearing under it is picked up. `int tlinkhovering(void)` lets
+  x.c sync the pointer shape after drawing.
 
 ### X side (x.c)
 
@@ -138,7 +143,8 @@ int   tlinkhovered(int col, int row);
   position; hover or unhover accordingly. A KeyRelease handler is added
   (`KeyReleaseMask` is already selected). `FocusOut` unhovers.
 - **Pointer shape.** `xinit` creates both the normal and the link cursor;
-  hover state changes call `XDefineCursor`.
+  `xlinkcursor()` — called after every hover change and at the end of
+  `xfinishdraw` — calls `XDefineCursor` when `tlinkhovering()` changed.
 - **Underline.** `xdrawline`: `if (tlinkhovered(x, y1)) new.mode |= ATTR_UNDERLINE;`
 - **Opening.** `openlink(const char *uri)`: double `fork` (grandchild is
   reparented to init, so st's shell-only `sigchld` never sees it), `setsid`,
