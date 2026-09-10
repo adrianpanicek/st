@@ -119,6 +119,14 @@ test_osc8_rejected(void)
 	/* control characters and spaces are not part of a URI */
 	put("\r\n\033]8;;https://x.org/a b\033\\S\033]8;;\033\\");
 	CHECK(term.line[2][0].link == 0);
+
+	/* file:// only for files of this machine */
+	put("\r\n\033]8;;file://otherhost/etc/passwd\033\\F\033]8;;\033\\");
+	CHECK(term.line[3][0].link == 0);
+	put("\r\n\033]8;;file:///etc/passwd\033\\F\033]8;;\033\\");
+	CHECK(term.line[4][0].link != 0);
+	put("\r\n\033]8;;file://localhost/etc/passwd\033\\F\033]8;;\033\\");
+	CHECK(term.line[5][0].link != 0);
 }
 
 static void
@@ -256,6 +264,11 @@ test_plain(void)
 	CHECK(!tlinkhovered(3, 0));
 	CHECK(!tlinkhovered(25, 0));
 	tlinkunhover();
+
+	/* plain file:// URLs pass the same host check */
+	put("\r\nfile://otherhost/x file:///tmp/x");
+	CHECKURI(tlinkat(3, 1), NULL);
+	CHECKURI(tlinkat(22, 1), "file:///tmp/x");
 }
 
 static void

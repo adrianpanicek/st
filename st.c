@@ -801,12 +801,15 @@ ttynew(const char *line, char *cmd, const char *out, char **args)
 			fprintf(stderr, "Error opening %s:%s\n",
 				out, strerror(errno));
 		}
+		if (iofd > 2)
+			fcntl(iofd, F_SETFD, FD_CLOEXEC);
 	}
 
 	if (line) {
 		if ((cmdfd = open(line, O_RDWR)) < 0)
 			die("open line '%s' failed: %s\n",
 			    line, strerror(errno));
+		fcntl(cmdfd, F_SETFD, FD_CLOEXEC);
 		dup2(cmdfd, 0);
 		stty(args);
 		return cmdfd;
@@ -844,6 +847,7 @@ ttynew(const char *line, char *cmd, const char *out, char **args)
 #endif
 		close(s);
 		cmdfd = m;
+		fcntl(cmdfd, F_SETFD, FD_CLOEXEC);
 		signal(SIGCHLD, sigchld);
 		break;
 	}
@@ -2122,11 +2126,24 @@ strhandle(void)
 int
 linkallowed(const char *uri)
 {
-	char **sc;
+	char **sc, host[256];
+	const char *p;
+	size_t n;
 
 	for (sc = urlschemes; *sc; sc++) {
-		if (!strncmp(uri, *sc, strlen(*sc)))
+		if (strncmp(uri, *sc, strlen(*sc)))
+			continue;
+		if (strcmp(*sc, "file://"))
 			return 1;
+		/* file://host/path: only files of this machine */
+		p = uri + strlen(*sc);
+		n = strcspn(p, "/");
+		if (!n || (n == 9 && !strncmp(p, "localhost", 9)))
+			return 1;
+		if (gethostname(host, sizeof(host)))
+			return 0;
+		host[sizeof(host) - 1] = '\0';
+		return strlen(host) == n && !strncmp(p, host, n);
 	}
 	return 0;
 }
@@ -2323,6 +2340,10 @@ linkfind(int col, int row, ushort *id, int *x0, int *y0, int *x1, int *y1)
 		*y0 = ys + cell[b] / term.col;
 		*x1 = cell[e - 1] % term.col;
 		*y1 = ys + cell[e - 1] / term.col;
+	}
+	if (uri && !linkallowed(uri)) {
+		free(uri);
+		uri = NULL;
 	}
 	free(buf);
 	free(cell);

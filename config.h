@@ -162,6 +162,12 @@ static unsigned int mousebg = 0;
  * (plain text) or accepted (OSC 8)
  */
 char *urlschemes[] = { "http://", "https://", "file://", "mailto:", NULL };
+/* command that opens a link, the URI is appended as last argument */
+static char *urlopener[] = { "xdg-open", NULL };
+/* modifier to hold for hovering and clicking links */
+static uint linkmod = ControlMask;
+/* mouse cursor over a hovered link */
+static unsigned int linkmouseshape = XC_hand2;
 
 /*
  * Color used to display font attributes when fontconfig selected a font which

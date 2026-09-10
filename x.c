@@ -1,5 +1,6 @@
 /* See LICENSE for license details. */
 #include <errno.h>
+#include <fcntl.h>
 #include <math.h>
 #include <limits.h>
 #include <locale.h>
@@ -7,10 +8,13 @@
 #include <sys/select.h>
 #include <time.h>
 #include <unistd.h>
+#include <string.h>
+#include <sys/wait.h>
 #include <libgen.h>
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/cursorfont.h>
+#include <X11/Xutil.h>
 #include <X11/keysym.h>
 #include <X11/Xft/Xft.h>
 #include <X11/XKBlib.h>
@@ -184,6 +188,7 @@ static void selrequest(XEvent *);
 static void setsel(char *, Time);
 static void mousesel(XEvent *, int);
 static void mousereport(XEvent *);
+static void openlink(const char *);
 static char *kmap(KeySym, uint);
 static int match(uint, uint);
 
@@ -254,6 +259,7 @@ static char *opt_name  = NULL;
 static char *opt_title = NULL;
 
 static uint buttons; /* bit field of pressed buttons */
+static int linkclick; /* Button1 press was used to open a link */
 
 void
 clipcopy(const Arg *dummy)
@@ -468,14 +474,60 @@ mouseaction(XEvent *e, uint release)
 }
 
 void
+openlink(const char *uri)
+{
+	char *argv[LEN(urlopener) + 1];
+	pid_t p;
+	int i;
+
+	for (i = 0; urlopener[i]; i++)
+		argv[i] = urlopener[i];
+	argv[i++] = (char *)uri;
+	argv[i] = NULL;
+
+	fprintf(stderr, "st: opening %s\n", uri);
+	/* double fork: the opener is reparented to init, no zombie */
+	switch ((p = fork())) {
+	case -1:
+		fprintf(stderr, "fork failed: %s\n", strerror(errno));
+		return;
+	case 0:
+		signal(SIGCHLD, SIG_DFL); /* st's handler waits for the shell */
+		setsid();
+		if (fork() == 0) {
+			/* keep st's stdin (maybe -l's line) from the opener */
+			close(0);
+			open("/dev/null", O_RDONLY);
+			execvp(argv[0], argv);
+			fprintf(stderr, "execvp %s failed: %s\n", argv[0],
+			        strerror(errno));
+			_exit(1);
+		}
+		_exit(0);
+	}
+	waitpid(p, NULL, 0);
+}
+
+void
 bpress(XEvent *e)
 {
 	int btn = e->xbutton.button;
 	struct timespec now;
 	int snap;
+	char *uri;
 
 	if (1 <= btn && btn <= 11)
 		buttons |= 1 << (btn-1);
+	if (btn == Button1)
+		linkclick = 0; /* in case the release got lost */
+
+	if (btn == Button1 && (e->xbutton.state & linkmod) == linkmod &&
+	    (uri = tlinkat(evcol(e), evrow(e)))) {
+		openlink(uri);
+		free(uri);
+		linkclick = 1;
+		return;
+	}
 
 	if (IS_SET(MODE_MOUSE) && !(e->xbutton.state & forcemousemod)) {
 		mousereport(e);
@@ -704,6 +756,11 @@ brelease(XEvent *e)
 	if (1 <= btn && btn <= 11)
 		buttons &= ~(1 << (btn-1));
 
+	if (btn == Button1 && linkclick) {
+		linkclick = 0;
+		return;
+	}
+
 	if (IS_SET(MODE_MOUSE) && !(e->xbutton.state & forcemousemod)) {
 		mousereport(e);
 		return;
@@ -718,6 +775,9 @@ brelease(XEvent *e)
 void
 bmotion(XEvent *e)
 {
+	if (linkclick) /* Button1 press opened a link, not a drag */
+		return;
+
 	if (IS_SET(MODE_MOUSE) && !(e->xbutton.state & forcemousemod)) {
 		mousereport(e);
 		return;
